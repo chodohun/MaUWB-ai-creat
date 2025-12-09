@@ -7,3 +7,9 @@ moshi==0.2.2
 torchtune==0.4.0
 torchao==0.9.0
 silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master
+flask==3.1.0
+joblib==1.4.2
+numpy==2.2.0
+scikit-learn==1.5.2
+scipy==1.14.1
+pyserial==3.5
