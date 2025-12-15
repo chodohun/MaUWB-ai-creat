@@ -363,6 +363,13 @@ class EventStatus(str, Enum):
     GUARDIAN_119 = "GUARDIAN_119"  # 보호자가 119 요청
 
 
+class NotificationStatus(str, Enum):
+    PENDING = "PENDING"
+    NOTIFIED = "NOTIFIED"
+    ACK_OK = "ACK_OK"
+    ACK_119 = "ACK_119"
+
+
 # ==========================
 # 2. 헬퍼 함수
 # ==========================
@@ -381,6 +388,37 @@ def init_db():
             payload TEXT,                      -- 센서 raw 데이터(JSON 문자열)
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            phone TEXT,
+            resident_id TEXT,
+            fingerprint_id TEXT,
+            relationship TEXT,
+            channel TEXT DEFAULT 'sms',
+            enabled INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS event_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            contact_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            channel TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(event_id) REFERENCES events(id),
+            FOREIGN KEY(contact_id) REFERENCES contacts(id)
         );
         """
     )
@@ -422,6 +460,62 @@ def row_to_dict(row):
     }
 
 
+def contact_row_to_dict(row):
+    if row is None:
+        return None
+
+    (
+        id_,
+        name,
+        phone,
+        resident_id,
+        fingerprint_id,
+        relationship,
+        channel,
+        enabled,
+        created_at,
+        updated_at,
+    ) = row
+
+    return {
+        "id": id_,
+        "name": name,
+        "phone": phone,
+        "resident_id": resident_id,
+        "fingerprint_id": fingerprint_id,
+        "relationship": relationship,
+        "channel": channel,
+        "enabled": bool(enabled),
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+
+def notification_row_to_dict(row):
+    if row is None:
+        return None
+
+    (
+        id_,
+        event_id,
+        contact_id,
+        status,
+        channel,
+        created_at,
+        updated_at,
+    ) = row
+
+    return {
+        "id": id_,
+        "event_id": event_id,
+        "contact_id": contact_id,
+        "status": status,
+        "channel": channel,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+
 def update_status(event_id: int, new_status: EventStatus):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -437,18 +531,41 @@ def update_status(event_id: int, new_status: EventStatus):
     conn.close()
 
 
+def update_notification_status(notification_id: int, new_status: NotificationStatus):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE event_notifications
+        SET status = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (new_status.value, datetime.utcnow().isoformat(), notification_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 # ==========================
 # 3. 보호자 알림 / 119 트리거 (Stub)
 # ==========================
 
-def notify_guardians(event_row: dict):
+def notify_contact(event_row: dict, contact_row: dict):
     """
     실제 서비스에서는 여기서 텔레그램/카카오/푸시 등으로 알림을 보냄.
     지금은 콘솔 출력만.
     """
-    print("[NOTIFY GUARDIANS]")
-    print(f"  event_id={event_row['id']}")
-    print(f"  type={event_row['event_type']}, state={event_row['state']}, status={event_row['status']}")
+
+    print("[NOTIFY CONTACT]")
+    print(f"  event_id={event_row['id']} -> contact_id={contact_row['id']}")
+    print(
+        f"  type={event_row['event_type']}, state={event_row['state']}, status={event_row['status']}, "
+        f"channel={contact_row['channel']}"
+    )
+    print(
+        f"  contact={{'name': '{contact_row['name']}', 'phone': '{contact_row['phone']}', "
+        f"'relationship': '{contact_row['relationship']}'}}"
+    )
     print(f"  payload={event_row['payload']}")
 
 
@@ -461,6 +578,50 @@ def trigger_119_call(event_row: dict):
     print(f"  event_id={event_row['id']}")
     print(f"  type={event_row['event_type']}, state={event_row['state']}")
     print("  실제 119 자동 신고 로직은 추후 구현(법/규제 검토 필요)")
+
+
+def create_notification_rows(event_id: int) -> list[dict]:
+    """Insert notification rows for every enabled contact."""
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM contacts WHERE enabled = 1 ORDER BY id")
+    contacts = [contact_row_to_dict(r) for r in cur.fetchall()]
+
+    now_str = datetime.utcnow().isoformat()
+    notifications = []
+    for contact in contacts:
+        cur.execute(
+            """
+            INSERT INTO event_notifications (event_id, contact_id, status, channel, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                contact["id"],
+                NotificationStatus.NOTIFIED.value,
+                contact["channel"],
+                now_str,
+                now_str,
+            ),
+        )
+        notif_id = cur.lastrowid
+        notifications.append(
+            {
+                "id": notif_id,
+                "event_id": event_id,
+                "contact_id": contact["id"],
+                "status": NotificationStatus.NOTIFIED.value,
+                "channel": contact["channel"],
+                "created_at": now_str,
+                "updated_at": now_str,
+                "contact": contact,
+            }
+        )
+
+    conn.commit()
+    conn.close()
+    return notifications
 
 
 # ==========================
@@ -535,8 +696,11 @@ def create_event():
 
     event_row = row_to_dict(row)
 
-    # 보호자에게 알림 (현재는 콘솔 출력만)
-    notify_guardians(event_row)
+    # 보호자(연락처)에게 알림 (현재는 콘솔 출력만)
+    notifications = create_notification_rows(event_id)
+
+    for notif in notifications:
+        notify_contact(event_row, notif["contact"])
 
     # 상태를 NOTIFIED로 갱신
     update_status(event_id, EventStatus.NOTIFIED)
@@ -556,6 +720,7 @@ def guardian_response(event_id: int):
     """
     data = request.get_json(force=True)
     action = data.get("action")
+    contact_id = data.get("contact_id")
 
     if action not in ("OK", "CALL_119"):
         return jsonify({"error": "invalid action"}), 400
@@ -572,16 +737,41 @@ def guardian_response(event_id: int):
 
     event_row = row_to_dict(row)
 
+    notification_row = None
+    if contact_id is not None:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM event_notifications WHERE event_id = ? AND contact_id = ?",
+            (event_id, contact_id),
+        )
+        notification_row = cur.fetchone()
+        conn.close()
+
     if action == "OK":
         new_status = EventStatus.GUARDIAN_OK
         update_status(event_id, new_status)
+        if notification_row:
+            update_notification_status(notification_row[0], NotificationStatus.ACK_OK)
     else:  # CALL_119
         new_status = EventStatus.GUARDIAN_119
         update_status(event_id, new_status)
+        if notification_row:
+            update_notification_status(notification_row[0], NotificationStatus.ACK_119)
         # 보호자 동의가 있을 때만 119 트리거
         trigger_119_call(event_row)
 
     return jsonify({"event_id": event_id, "status": new_status.value}), 200
+
+
+@app.route("/api/events/<int:event_id>/notifications", methods=["GET"])
+def list_notifications(event_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM event_notifications WHERE event_id = ? ORDER BY id", (event_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify([notification_row_to_dict(r) for r in rows]), 200
 
 
 @app.route("/api/events", methods=["GET"])
@@ -603,6 +793,101 @@ def list_events():
 
     events = [row_to_dict(r) for r in rows]
     return jsonify(events), 200
+
+
+@app.route("/api/contacts", methods=["GET"])
+def list_contacts():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM contacts ORDER BY id")
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify([contact_row_to_dict(r) for r in rows]), 200
+
+
+@app.route("/api/contacts", methods=["POST"])
+def create_contact():
+    data = request.get_json(force=True)
+
+    name = data.get("name")
+    phone = data.get("phone")
+    resident_id = data.get("resident_id")
+    fingerprint_id = data.get("fingerprint_id")
+    relationship = data.get("relationship")
+    channel = data.get("channel", "sms")
+    enabled = bool(data.get("enabled", True))
+
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+
+    now_str = datetime.utcnow().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO contacts (name, phone, resident_id, fingerprint_id, relationship, channel, enabled, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            name,
+            phone,
+            resident_id,
+            fingerprint_id,
+            relationship,
+            channel,
+            1 if enabled else 0,
+            now_str,
+            now_str,
+        ),
+    )
+    contact_id = cur.lastrowid
+    conn.commit()
+
+    cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
+    row = cur.fetchone()
+    conn.close()
+    return jsonify(contact_row_to_dict(row)), 201
+
+
+@app.route("/api/contacts/<int:contact_id>", methods=["PATCH"])
+def update_contact(contact_id: int):
+    data = request.get_json(force=True)
+    allowed_fields = {
+        "name",
+        "phone",
+        "resident_id",
+        "fingerprint_id",
+        "relationship",
+        "channel",
+        "enabled",
+    }
+    updates = {k: v for k, v in data.items() if k in allowed_fields}
+
+    if not updates:
+        return jsonify({"error": "no valid fields to update"}), 400
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
+    if cur.fetchone() is None:
+        conn.close()
+        return jsonify({"error": "contact not found"}), 404
+
+    set_clause = ", ".join([f"{k} = ?" for k in updates])
+    values = [(1 if v else 0) if k == "enabled" else v for k, v in updates.items()]
+    values.append(datetime.utcnow().isoformat())
+    values.append(contact_id)
+
+    cur.execute(
+        f"UPDATE contacts SET {set_clause}, updated_at = ? WHERE id = ?",
+        tuple(values),
+    )
+    conn.commit()
+
+    cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
+    row = cur.fetchone()
+    conn.close()
+    return jsonify(contact_row_to_dict(row)), 200
 
 
 @app.route("/api/events/<int:event_id>", methods=["GET"])
