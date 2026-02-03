@@ -1,5 +1,5 @@
 """
-Hybrid UWB fall/respiration monitor with optional Flask API.
+Hybrid UWB fall/respiration monitor with optional FastAPI.
 """
 from __future__ import annotations
 
@@ -17,10 +17,11 @@ from typing import Dict, Iterable, Iterator, Optional, Tuple
 
 import joblib
 import numpy as np
-from flask import Flask, jsonify, request
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request
 from scipy import signal
 
-app = Flask(__name__)
+app = FastAPI()
 
 # ==========================
 # 1) 데이터 / 상태 정의
@@ -348,7 +349,7 @@ def run_demo_monitor(monitor: HybridMonitor, sleep_s: float = 0.05):
 
 
 # ==========================
-# 7) 이벤트 DB/Flask API
+# 7) 이벤트 DB/FastAPI
 # ==========================
 
 
@@ -630,16 +631,16 @@ def create_notification_rows(event_id: int) -> list[dict]:
 # ==========================
 
 
-@app.route("/api/health", methods=["GET"])
+@app.get("/api/health")
 def health_check():
     """
     서버 살아 있는지 확인용 간단 엔드포인트.
     """
-    return jsonify({"status": "ok"}), 200
+    return {"status": "ok"}
 
 
-@app.route("/api/events", methods=["POST"])
-def create_event():
+@app.post("/api/events", status_code=201)
+async def create_event(request: Request):
     """
     디바이스(라즈베리파이 등)에서 위험 이벤트를 보낼 때 사용하는 엔드포인트.
 
@@ -653,17 +654,17 @@ def create_event():
       "on_floor": true
     }
     """
-    data = request.get_json(force=True)
+    data = await request.json()
 
     event_type = data.get("event_type")
     ts = data.get("timestamp")
     state = data.get("state")
 
     if event_type not in ("FALL", "UNRESPONSIVE"):
-        return jsonify({"error": "invalid event_type"}), 400
+        raise HTTPException(status_code=400, detail="invalid event_type")
 
     if ts is None or state is None:
-        return jsonify({"error": "timestamp and state are required"}), 400
+        raise HTTPException(status_code=400, detail="timestamp and state are required")
 
     # 전체 payload를 JSON 문자열로 저장
     payload_str = json.dumps(data, ensure_ascii=False)
@@ -706,11 +707,11 @@ def create_event():
     # 상태를 NOTIFIED로 갱신
     update_status(event_id, EventStatus.NOTIFIED)
 
-    return jsonify({"event_id": event_id, "status": EventStatus.NOTIFIED.value}), 201
+    return {"event_id": event_id, "status": EventStatus.NOTIFIED.value}
 
 
-@app.route("/api/events/<int:event_id>/guardian_response", methods=["POST"])
-def guardian_response(event_id: int):
+@app.post("/api/events/{event_id}/guardian_response")
+async def guardian_response(event_id: int, request: Request):
     """
     보호자 앱/웹에서 이벤트에 대한 응답을 보낼 때 사용하는 엔드포인트.
 
@@ -719,12 +720,12 @@ def guardian_response(event_id: int):
       "action": "OK"        # "OK" | "CALL_119"
     }
     """
-    data = request.get_json(force=True)
+    data = await request.json()
     action = data.get("action")
     contact_id = data.get("contact_id")
 
     if action not in ("OK", "CALL_119"):
-        return jsonify({"error": "invalid action"}), 400
+        raise HTTPException(status_code=400, detail="invalid action")
 
     # 이벤트 조회
     conn = sqlite3.connect(DB_PATH)
@@ -734,7 +735,7 @@ def guardian_response(event_id: int):
     conn.close()
 
     if row is None:
-        return jsonify({"error": "event not found"}), 404
+        raise HTTPException(status_code=404, detail="event not found")
 
     event_row = row_to_dict(row)
 
@@ -762,27 +763,25 @@ def guardian_response(event_id: int):
         # 보호자 동의가 있을 때만 119 트리거
         trigger_119_call(event_row)
 
-    return jsonify({"event_id": event_id, "status": new_status.value}), 200
+    return {"event_id": event_id, "status": new_status.value}
 
 
-@app.route("/api/events/<int:event_id>/notifications", methods=["GET"])
+@app.get("/api/events/{event_id}/notifications")
 def list_notifications(event_id: int):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("SELECT * FROM event_notifications WHERE event_id = ? ORDER BY id", (event_id,))
     rows = cur.fetchall()
     conn.close()
-    return jsonify([notification_row_to_dict(r) for r in rows]), 200
+    return [notification_row_to_dict(r) for r in rows]
 
 
-@app.route("/api/events", methods=["GET"])
-def list_events():
+@app.get("/api/events")
+def list_events(limit: int = 20):
     """
     최근 이벤트 목록 조회용 (디버깅/관리자용).
     ?limit=10 형태로 개수 조절 가능.
     """
-    limit = int(request.args.get("limit", 20))
-
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
@@ -793,22 +792,22 @@ def list_events():
     conn.close()
 
     events = [row_to_dict(r) for r in rows]
-    return jsonify(events), 200
+    return events
 
 
-@app.route("/api/contacts", methods=["GET"])
+@app.get("/api/contacts")
 def list_contacts():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("SELECT * FROM contacts ORDER BY id")
     rows = cur.fetchall()
     conn.close()
-    return jsonify([contact_row_to_dict(r) for r in rows]), 200
+    return [contact_row_to_dict(r) for r in rows]
 
 
-@app.route("/api/contacts", methods=["POST"])
-def create_contact():
-    data = request.get_json(force=True)
+@app.post("/api/contacts", status_code=201)
+async def create_contact(request: Request):
+    data = await request.json()
 
     name = data.get("name")
     phone = data.get("phone")
@@ -819,7 +818,7 @@ def create_contact():
     enabled = bool(data.get("enabled", True))
 
     if not name:
-        return jsonify({"error": "name is required"}), 400
+        raise HTTPException(status_code=400, detail="name is required")
 
     now_str = datetime.utcnow().isoformat()
     conn = sqlite3.connect(DB_PATH)
@@ -847,12 +846,12 @@ def create_contact():
     cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
     row = cur.fetchone()
     conn.close()
-    return jsonify(contact_row_to_dict(row)), 201
+    return contact_row_to_dict(row)
 
 
-@app.route("/api/contacts/<int:contact_id>", methods=["PATCH"])
-def update_contact(contact_id: int):
-    data = request.get_json(force=True)
+@app.patch("/api/contacts/{contact_id}")
+async def update_contact(contact_id: int, request: Request):
+    data = await request.json()
     allowed_fields = {
         "name",
         "phone",
@@ -865,14 +864,14 @@ def update_contact(contact_id: int):
     updates = {k: v for k, v in data.items() if k in allowed_fields}
 
     if not updates:
-        return jsonify({"error": "no valid fields to update"}), 400
+        raise HTTPException(status_code=400, detail="no valid fields to update")
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
     if cur.fetchone() is None:
         conn.close()
-        return jsonify({"error": "contact not found"}), 404
+        raise HTTPException(status_code=404, detail="contact not found")
 
     set_clause = ", ".join([f"{k} = ?" for k in updates])
     values = [(1 if v else 0) if k == "enabled" else v for k, v in updates.items()]
@@ -888,10 +887,10 @@ def update_contact(contact_id: int):
     cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
     row = cur.fetchone()
     conn.close()
-    return jsonify(contact_row_to_dict(row)), 200
+    return contact_row_to_dict(row)
 
 
-@app.route("/api/events/<int:event_id>", methods=["GET"])
+@app.get("/api/events/{event_id}")
 def get_event(event_id: int):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -900,9 +899,9 @@ def get_event(event_id: int):
     conn.close()
 
     if row is None:
-        return jsonify({"error": "event not found"}), 404
+        raise HTTPException(status_code=404, detail="event not found")
 
-    return jsonify(row_to_dict(row)), 200
+    return row_to_dict(row)
 
 
 # ==========================
@@ -1077,7 +1076,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fall-model-path", type=str, default="fall_clf.pkl", help="넘어짐 모델 경로")
     parser.add_argument("--unresp-model-path", type=str, default="unresp_clf.pkl", help="무반응 모델 경로")
     parser.add_argument("--db-path", type=Path, default=Path(DB_PATH), help="SQLite DB 파일 경로")
-    parser.add_argument("--api-port", type=int, default=5000, help="Flask API 포트")
+    parser.add_argument("--api-port", type=int, default=5000, help="FastAPI 포트")
     parser.add_argument("--demo-sleep", type=float, default=0.05, help="데모 루프 sleep 간격")
     parser.add_argument("--fall-suspect-height-drop", type=float, default=0.7, help="넘어짐 의심 높이 차 임계값")
     parser.add_argument("--fall-confirm-still-sec", type=float, default=30.0, help="넘어짐 확정 정지 시간")
@@ -1104,7 +1103,7 @@ def main():
 
     if args.mode == "api":
         init_db()
-        app.run(host="0.0.0.0", port=args.api_port, debug=False, use_reloader=False)
+        uvicorn.run(app, host="0.0.0.0", port=args.api_port)
         return
 
     if args.mode == "logger":
