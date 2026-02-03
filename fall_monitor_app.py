@@ -1,5 +1,5 @@
 """
-Hybrid UWB fall/respiration monitor with optional FastAPI.
+Hybrid UWB fall/respiration monitor with optional Flask API.
 """
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ from typing import Dict, Iterable, Iterator, Optional, Tuple
 
 import joblib
 import numpy as np
-from fastapi import FastAPI
+from flask import Flask, jsonify, request
 from scipy import signal
 
-app = FastAPI()
+app = Flask(__name__)
 
 # ==========================
 # 1) 데이터 / 상태 정의
@@ -207,7 +207,7 @@ class HybridMonitor:
         # ML 모델(확률 출력 가능한 걸로 학습해두면 좋음)
         self.fall_clf = joblib.load(fall_model_path)  # ex) RandomForest, LogisticRegression
         self.unresp_clf = joblib.load(unresp_model_path)  # ex) RandomForest, LogisticRegression
- self.state = State.NORMAL
+        self.state = State.NORMAL
         self.last_movement_t: Optional[float] = None
         self.fall_suspect_t: Optional[float] = None
 
@@ -353,7 +353,6 @@ def run_demo_monitor(monitor: HybridMonitor, sleep_s: float = 0.05):
 
 
 DB_PATH = "events.db"
-app = Flask(__name__)
 
 
 class EventStatus(str, Enum):
@@ -373,6 +372,7 @@ class NotificationStatus(str, Enum):
 # ==========================
 # 2. 헬퍼 함수
 # ==========================
+
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -549,6 +549,7 @@ def update_notification_status(notification_id: int, new_status: NotificationSta
 # ==========================
 # 3. 보호자 알림 / 119 트리거 (Stub)
 # ==========================
+
 
 def notify_contact(event_row: dict, contact_row: dict):
     """
