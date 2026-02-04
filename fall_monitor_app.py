@@ -17,7 +17,6 @@ from typing import Dict, Iterable, Iterator, Optional, Tuple
 
 import joblib
 import numpy as np
-import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from scipy import signal
 
@@ -1103,6 +1102,8 @@ def main():
 
     if args.mode == "api":
         init_db()
+        import uvicorn
+
         uvicorn.run(app, host="0.0.0.0", port=args.api_port)
         return
 
