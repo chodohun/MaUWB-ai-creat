@@ -17,10 +17,7 @@ from typing import Dict, Iterable, Iterator, Optional, Tuple
 
 import joblib
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
 from scipy import signal
-
-app = FastAPI()
 
 # ==========================
 # 1) 데이터 / 상태 정의
@@ -630,277 +627,284 @@ def create_notification_rows(event_id: int) -> list[dict]:
 # ==========================
 
 
-@app.get("/api/health")
-def health_check():
-    """
-    서버 살아 있는지 확인용 간단 엔드포인트.
-    """
-    return {"status": "ok"}
+def build_api_app():
+    from fastapi import FastAPI, HTTPException, Request
 
+    app = FastAPI()
 
-@app.post("/api/events", status_code=201)
-async def create_event(request: Request):
-    """
-    디바이스(라즈베리파이 등)에서 위험 이벤트를 보낼 때 사용하는 엔드포인트.
-
-    요청 JSON 예시:
-    {
-      "event_type": "FALL",             # "FALL" or "UNRESPONSIVE"
-      "timestamp": 1719999999.123,      # 센서 기준 타임스탬프 (float)
-      "state": "FALL_CONFIRMED",        # HybridFallDetector 상태 이름
-      "height": 0.4,
-      "speed": 0.01,
-      "on_floor": true
-    }
-    """
-    data = await request.json()
-
-    event_type = data.get("event_type")
-    ts = data.get("timestamp")
-    state = data.get("state")
-
-    if event_type not in ("FALL", "UNRESPONSIVE"):
-        raise HTTPException(status_code=400, detail="invalid event_type")
-
-    if ts is None or state is None:
-        raise HTTPException(status_code=400, detail="timestamp and state are required")
-
-    # 전체 payload를 JSON 문자열로 저장
-    payload_str = json.dumps(data, ensure_ascii=False)
-
-    now_str = datetime.utcnow().isoformat()
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
+    @app.get("/api/health")
+    def health_check():
         """
-        INSERT INTO events (event_type, timestamp, state, status, payload, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            event_type,
-            float(ts),
-            state,
-            EventStatus.PENDING.value,
-            payload_str,
-            now_str,
-            now_str,
-        ),
-    )
-    event_id = cur.lastrowid
-    conn.commit()
-
-    # 방금 저장한 이벤트를 dict로 변환
-    cur.execute("SELECT * FROM events WHERE id = ?", (event_id,))
-    row = cur.fetchone()
-    conn.close()
-
-    event_row = row_to_dict(row)
-
-    # 보호자(연락처)에게 알림 (현재는 콘솔 출력만)
-    notifications = create_notification_rows(event_id)
-
-    for notif in notifications:
-        notify_contact(event_row, notif["contact"])
-
-    # 상태를 NOTIFIED로 갱신
-    update_status(event_id, EventStatus.NOTIFIED)
-
-    return {"event_id": event_id, "status": EventStatus.NOTIFIED.value}
+        서버 살아 있는지 확인용 간단 엔드포인트.
+        """
+        return {"status": "ok"}
 
 
-@app.post("/api/events/{event_id}/guardian_response")
-async def guardian_response(event_id: int, request: Request):
-    """
-    보호자 앱/웹에서 이벤트에 대한 응답을 보낼 때 사용하는 엔드포인트.
+    @app.post("/api/events", status_code=201)
+    async def create_event(request: Request):
+        """
+        디바이스(라즈베리파이 등)에서 위험 이벤트를 보낼 때 사용하는 엔드포인트.
 
-    요청 JSON 예시:
-    {
-      "action": "OK"        # "OK" | "CALL_119"
-    }
-    """
-    data = await request.json()
-    action = data.get("action")
-    contact_id = data.get("contact_id")
+        요청 JSON 예시:
+        {
+          "event_type": "FALL",             # "FALL" or "UNRESPONSIVE"
+          "timestamp": 1719999999.123,      # 센서 기준 타임스탬프 (float)
+          "state": "FALL_CONFIRMED",        # HybridFallDetector 상태 이름
+          "height": 0.4,
+          "speed": 0.01,
+          "on_floor": true
+        }
+        """
+        data = await request.json()
 
-    if action not in ("OK", "CALL_119"):
-        raise HTTPException(status_code=400, detail="invalid action")
+        event_type = data.get("event_type")
+        ts = data.get("timestamp")
+        state = data.get("state")
 
-    # 이벤트 조회
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM events WHERE id = ?", (event_id,))
-    row = cur.fetchone()
-    conn.close()
+        if event_type not in ("FALL", "UNRESPONSIVE"):
+            raise HTTPException(status_code=400, detail="invalid event_type")
 
-    if row is None:
-        raise HTTPException(status_code=404, detail="event not found")
+        if ts is None or state is None:
+            raise HTTPException(status_code=400, detail="timestamp and state are required")
 
-    event_row = row_to_dict(row)
+        # 전체 payload를 JSON 문자열로 저장
+        payload_str = json.dumps(data, ensure_ascii=False)
 
-    notification_row = None
-    if contact_id is not None:
+        now_str = datetime.utcnow().isoformat()
+
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         cur.execute(
-            "SELECT * FROM event_notifications WHERE event_id = ? AND contact_id = ?",
-            (event_id, contact_id),
+            """
+            INSERT INTO events (event_type, timestamp, state, status, payload, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_type,
+                float(ts),
+                state,
+                EventStatus.PENDING.value,
+                payload_str,
+                now_str,
+                now_str,
+            ),
         )
-        notification_row = cur.fetchone()
+        event_id = cur.lastrowid
+        conn.commit()
+
+        # 방금 저장한 이벤트를 dict로 변환
+        cur.execute("SELECT * FROM events WHERE id = ?", (event_id,))
+        row = cur.fetchone()
         conn.close()
 
-    if action == "OK":
-        new_status = EventStatus.GUARDIAN_OK
-        update_status(event_id, new_status)
-        if notification_row:
-            update_notification_status(notification_row[0], NotificationStatus.ACK_OK)
-    else:  # CALL_119
-        new_status = EventStatus.GUARDIAN_119
-        update_status(event_id, new_status)
-        if notification_row:
-            update_notification_status(notification_row[0], NotificationStatus.ACK_119)
-        # 보호자 동의가 있을 때만 119 트리거
-        trigger_119_call(event_row)
+        event_row = row_to_dict(row)
 
-    return {"event_id": event_id, "status": new_status.value}
+        # 보호자(연락처)에게 알림 (현재는 콘솔 출력만)
+        notifications = create_notification_rows(event_id)
+
+        for notif in notifications:
+            notify_contact(event_row, notif["contact"])
+
+        # 상태를 NOTIFIED로 갱신
+        update_status(event_id, EventStatus.NOTIFIED)
+
+        return {"event_id": event_id, "status": EventStatus.NOTIFIED.value}
 
 
-@app.get("/api/events/{event_id}/notifications")
-def list_notifications(event_id: int):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM event_notifications WHERE event_id = ? ORDER BY id", (event_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return [notification_row_to_dict(r) for r in rows]
-
-
-@app.get("/api/events")
-def list_events(limit: int = 20):
-    """
-    최근 이벤트 목록 조회용 (디버깅/관리자용).
-    ?limit=10 형태로 개수 조절 가능.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT * FROM events ORDER BY created_at DESC LIMIT ?",
-        (limit,),
-    )
-    rows = cur.fetchall()
-    conn.close()
-
-    events = [row_to_dict(r) for r in rows]
-    return events
-
-
-@app.get("/api/contacts")
-def list_contacts():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM contacts ORDER BY id")
-    rows = cur.fetchall()
-    conn.close()
-    return [contact_row_to_dict(r) for r in rows]
-
-
-@app.post("/api/contacts", status_code=201)
-async def create_contact(request: Request):
-    data = await request.json()
-
-    name = data.get("name")
-    phone = data.get("phone")
-    resident_id = data.get("resident_id")
-    fingerprint_id = data.get("fingerprint_id")
-    relationship = data.get("relationship")
-    channel = data.get("channel", "sms")
-    enabled = bool(data.get("enabled", True))
-
-    if not name:
-        raise HTTPException(status_code=400, detail="name is required")
-
-    now_str = datetime.utcnow().isoformat()
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
+    @app.post("/api/events/{event_id}/guardian_response")
+    async def guardian_response(event_id: int, request: Request):
         """
-        INSERT INTO contacts (name, phone, resident_id, fingerprint_id, relationship, channel, enabled, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            name,
-            phone,
-            resident_id,
-            fingerprint_id,
-            relationship,
-            channel,
-            1 if enabled else 0,
-            now_str,
-            now_str,
-        ),
-    )
-    contact_id = cur.lastrowid
-    conn.commit()
+        보호자 앱/웹에서 이벤트에 대한 응답을 보낼 때 사용하는 엔드포인트.
 
-    cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
-    row = cur.fetchone()
-    conn.close()
-    return contact_row_to_dict(row)
+        요청 JSON 예시:
+        {
+          "action": "OK"        # "OK" | "CALL_119"
+        }
+        """
+        data = await request.json()
+        action = data.get("action")
+        contact_id = data.get("contact_id")
 
+        if action not in ("OK", "CALL_119"):
+            raise HTTPException(status_code=400, detail="invalid action")
 
-@app.patch("/api/contacts/{contact_id}")
-async def update_contact(contact_id: int, request: Request):
-    data = await request.json()
-    allowed_fields = {
-        "name",
-        "phone",
-        "resident_id",
-        "fingerprint_id",
-        "relationship",
-        "channel",
-        "enabled",
-    }
-    updates = {k: v for k, v in data.items() if k in allowed_fields}
-
-    if not updates:
-        raise HTTPException(status_code=400, detail="no valid fields to update")
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
-    if cur.fetchone() is None:
+        # 이벤트 조회
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM events WHERE id = ?", (event_id,))
+        row = cur.fetchone()
         conn.close()
-        raise HTTPException(status_code=404, detail="contact not found")
 
-    set_clause = ", ".join([f"{k} = ?" for k in updates])
-    values = [(1 if v else 0) if k == "enabled" else v for k, v in updates.items()]
-    values.append(datetime.utcnow().isoformat())
-    values.append(contact_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="event not found")
 
-    cur.execute(
-        f"UPDATE contacts SET {set_clause}, updated_at = ? WHERE id = ?",
-        tuple(values),
-    )
-    conn.commit()
+        event_row = row_to_dict(row)
 
-    cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
-    row = cur.fetchone()
-    conn.close()
-    return contact_row_to_dict(row)
+        notification_row = None
+        if contact_id is not None:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM event_notifications WHERE event_id = ? AND contact_id = ?",
+                (event_id, contact_id),
+            )
+            notification_row = cur.fetchone()
+            conn.close()
+
+        if action == "OK":
+            new_status = EventStatus.GUARDIAN_OK
+            update_status(event_id, new_status)
+            if notification_row:
+                update_notification_status(notification_row[0], NotificationStatus.ACK_OK)
+        else:  # CALL_119
+            new_status = EventStatus.GUARDIAN_119
+            update_status(event_id, new_status)
+            if notification_row:
+                update_notification_status(notification_row[0], NotificationStatus.ACK_119)
+            # 보호자 동의가 있을 때만 119 트리거
+            trigger_119_call(event_row)
+
+        return {"event_id": event_id, "status": new_status.value}
 
 
-@app.get("/api/events/{event_id}")
-def get_event(event_id: int):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM events WHERE id = ?", (event_id,))
-    row = cur.fetchone()
-    conn.close()
+    @app.get("/api/events/{event_id}/notifications")
+    def list_notifications(event_id: int):
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM event_notifications WHERE event_id = ? ORDER BY id", (event_id,))
+        rows = cur.fetchall()
+        conn.close()
+        return [notification_row_to_dict(r) for r in rows]
 
-    if row is None:
-        raise HTTPException(status_code=404, detail="event not found")
 
-    return row_to_dict(row)
+    @app.get("/api/events")
+    def list_events(limit: int = 20):
+        """
+        최근 이벤트 목록 조회용 (디버깅/관리자용).
+        ?limit=10 형태로 개수 조절 가능.
+        """
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM events ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        events = [row_to_dict(r) for r in rows]
+        return events
+
+
+    @app.get("/api/contacts")
+    def list_contacts():
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM contacts ORDER BY id")
+        rows = cur.fetchall()
+        conn.close()
+        return [contact_row_to_dict(r) for r in rows]
+
+
+    @app.post("/api/contacts", status_code=201)
+    async def create_contact(request: Request):
+        data = await request.json()
+
+        name = data.get("name")
+        phone = data.get("phone")
+        resident_id = data.get("resident_id")
+        fingerprint_id = data.get("fingerprint_id")
+        relationship = data.get("relationship")
+        channel = data.get("channel", "sms")
+        enabled = bool(data.get("enabled", True))
+
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+
+        now_str = datetime.utcnow().isoformat()
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO contacts (name, phone, resident_id, fingerprint_id, relationship, channel, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                phone,
+                resident_id,
+                fingerprint_id,
+                relationship,
+                channel,
+                1 if enabled else 0,
+                now_str,
+                now_str,
+            ),
+        )
+        contact_id = cur.lastrowid
+        conn.commit()
+
+        cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
+        row = cur.fetchone()
+        conn.close()
+        return contact_row_to_dict(row)
+
+
+    @app.patch("/api/contacts/{contact_id}")
+    async def update_contact(contact_id: int, request: Request):
+        data = await request.json()
+        allowed_fields = {
+            "name",
+            "phone",
+            "resident_id",
+            "fingerprint_id",
+            "relationship",
+            "channel",
+            "enabled",
+        }
+        updates = {k: v for k, v in data.items() if k in allowed_fields}
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="no valid fields to update")
+
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
+        if cur.fetchone() is None:
+            conn.close()
+            raise HTTPException(status_code=404, detail="contact not found")
+
+        set_clause = ", ".join([f"{k} = ?" for k in updates])
+        values = [(1 if v else 0) if k == "enabled" else v for k, v in updates.items()]
+        values.append(datetime.utcnow().isoformat())
+        values.append(contact_id)
+
+        cur.execute(
+            f"UPDATE contacts SET {set_clause}, updated_at = ? WHERE id = ?",
+            tuple(values),
+        )
+        conn.commit()
+
+        cur.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
+        row = cur.fetchone()
+        conn.close()
+        return contact_row_to_dict(row)
+
+
+    @app.get("/api/events/{event_id}")
+    def get_event(event_id: int):
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM events WHERE id = ?", (event_id,))
+        row = cur.fetchone()
+        conn.close()
+
+        if row is None:
+            raise HTTPException(status_code=404, detail="event not found")
+
+        return row_to_dict(row)
+
+    return app
 
 
 # ==========================
@@ -1102,6 +1106,7 @@ def main():
 
     if args.mode == "api":
         init_db()
+        app = build_api_app()
         import uvicorn
 
         uvicorn.run(app, host="0.0.0.0", port=args.api_port)
