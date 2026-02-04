@@ -179,6 +179,18 @@ def extract_features(frames: list[UWBFrame], fs: float) -> Tuple[np.ndarray, Dic
 # ==========================
 
 
+
+class _FallbackModel:
+    def __init__(self, label: str):
+        self.label = label
+
+    def predict_proba(self, x):
+        return [[1.0, 0.0]]
+
+    def predict(self, x):
+        return [0.0]
+
+
 class HybridMonitor:
     """
     - 규칙(FSM)로 FALL_SUSPECT/시간조건 관리
@@ -204,8 +216,18 @@ class HybridMonitor:
         self.buf = deque(maxlen=self.win_n)
 
         # ML 모델(확률 출력 가능한 걸로 학습해두면 좋음)
-        self.fall_clf = joblib.load(fall_model_path)  # ex) RandomForest, LogisticRegression
-        self.unresp_clf = joblib.load(unresp_model_path)  # ex) RandomForest, LogisticRegression
+        fall_path = Path(fall_model_path)
+        unresp_path = Path(unresp_model_path)
+        if fall_path.exists():
+            self.fall_clf = joblib.load(fall_model_path)  # ex) RandomForest, LogisticRegression
+        else:
+            print(f"[WARN] fall model not found: {fall_model_path}. Using fallback model.")
+            self.fall_clf = _FallbackModel("fall")
+        if unresp_path.exists():
+            self.unresp_clf = joblib.load(unresp_model_path)  # ex) RandomForest, LogisticRegression
+        else:
+            print(f"[WARN] unresponsive model not found: {unresp_model_path}. Using fallback model.")
+            self.unresp_clf = _FallbackModel("unresp")
         self.state = State.NORMAL
         self.last_movement_t: Optional[float] = None
         self.fall_suspect_t: Optional[float] = None
