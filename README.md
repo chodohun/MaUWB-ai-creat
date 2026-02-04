@@ -54,6 +54,27 @@ python run_csm.py
 
 If you want to write your own applications with CSM, the following examples show basic usage.
 
+## UWB DW3000 Hybrid Fall/Respiration Monitor Example
+
+The repository includes a hybrid UWB monitor for DW3000 streams that estimates respiration,
+extracts motion features, and uses ML classifiers to label **NORMAL**, **FALL_SUSPECT**,
+**FALL_CONFIRMED**, or **UNRESPONSIVE**. It also ships with optional FastAPI endpoints,
+SQLite logging, and a serial-to-CSV logger for DW3000 text frames.
+
+```bash
+# 1) Run a local demo loop (replace read_uwb_frame_somehow with real data)
+python uwb_anomaly.py --mode monitor
+
+# 2) Run the FastAPI event server (creates events.db)
+python uwb_anomaly.py --mode api --api-port 5000
+
+# 3) Log DW3000 serial lines into CSV
+python uwb_anomaly.py --mode logger --serial-port COM6 --baud 115200 --csv-path uwb_log.csv
+
+# 4) Tail the CSV and emit basic movement labels
+python uwb_anomaly.py --mode csv_ai --input-csv uwb_log.csv --events-csv events.csv
+```
+
 #### Generate a sentence
 
 This will use a random speaker identity, as no prompt or context is provided.
