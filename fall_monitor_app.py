@@ -1,5 +1,7 @@
 """
 Hybrid UWB fall/respiration monitor with optional FastAPI.
+
+Dependencies for this module are listed in requirements-fall-monitor.txt.
 """
 from __future__ import annotations
 
