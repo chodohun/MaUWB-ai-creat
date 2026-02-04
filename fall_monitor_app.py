@@ -209,6 +209,8 @@ class HybridMonitor:
         fall_confirm_still_sec: float = 30.0,
         unresp_still_sec: float = 300.0,
         still_speed_th: float = 0.02,
+        baseline_min_samples: int = 30,
+        anomaly_z_threshold: float = 3.0,
     ):
         self.fs = fs
         self.win_n = int(window_sec * fs)
@@ -237,8 +239,13 @@ class HybridMonitor:
         self.fall_confirm_still_sec = fall_confirm_still_sec
         self.unresp_still_sec = unresp_still_sec
         self.still_speed_th = still_speed_th
+        self.baseline_min_samples = baseline_min_samples
+        self.anomaly_z_threshold = anomaly_z_threshold
 
         self._counter = 0
+        self._baseline_count = 0
+        self._baseline_mean: Optional[np.ndarray] = None
+        self._baseline_m2: Optional[np.ndarray] = None
 
     def _ml_proba(self, clf, x: np.ndarray) -> float:
         # 이진 분류에서 "위험(1)" 확률을 반환한다고 가정
@@ -252,6 +259,25 @@ class HybridMonitor:
             z = float(clf.decision_function(x.reshape(1, -1))[0])
             return float(1.0 / (1.0 + np.exp(-z)))
         return float(clf.predict(x.reshape(1, -1))[0])
+
+    def _update_baseline(self, feat: np.ndarray) -> None:
+        if self._baseline_mean is None:
+            self._baseline_mean = np.zeros_like(feat)
+            self._baseline_m2 = np.zeros_like(feat)
+
+        self._baseline_count += 1
+        delta = feat - self._baseline_mean
+        self._baseline_mean = self._baseline_mean + delta / self._baseline_count
+        delta2 = feat - self._baseline_mean
+        self._baseline_m2 = self._baseline_m2 + delta * delta2
+
+    def _anomaly_score(self, feat: np.ndarray) -> float:
+        if self._baseline_count < self.baseline_min_samples or self._baseline_mean is None:
+            return float("nan")
+        var = self._baseline_m2 / max(self._baseline_count - 1, 1)
+        std = np.sqrt(np.clip(var, 1e-6, None))
+        z = np.abs((feat - self._baseline_mean) / std)
+        return float(np.max(z))
 
     def update(self, frame: UWBFrame) -> Tuple[State, Dict[str, float]]:
         self.buf.append(frame)
@@ -270,6 +296,7 @@ class HybridMonitor:
 
         frames = list(self.buf)
         feat, dbg = extract_features(frames, self.fs)
+        anomaly_score = self._anomaly_score(feat)
 
         fall_p = self._ml_proba(self.fall_clf, feat)
         unresp_p = self._ml_proba(self.unresp_clf, feat)
@@ -277,6 +304,14 @@ class HybridMonitor:
         # --- FSM: 넘어짐 의심 트리거(규칙) ---
         # height_drop가 크고 바닥 비율이 높으면 의심
         if dbg["h_drop"] > self.fall_suspect_height_drop and dbg["floor_ratio"] > 0.6:
+            if self.state not in (State.FALL_SUSPECT, State.FALL_CONFIRMED):
+                self.state = State.FALL_SUSPECT
+                self.fall_suspect_t = frame.t
+        if (
+            not np.isnan(anomaly_score)
+            and anomaly_score > self.anomaly_z_threshold
+            and dbg["floor_ratio"] > 0.6
+        ):
             if self.state not in (State.FALL_SUSPECT, State.FALL_CONFIRMED):
                 self.state = State.FALL_SUSPECT
                 self.fall_suspect_t = frame.t
@@ -300,10 +335,13 @@ class HybridMonitor:
                 self.state = State.WALKING
             else:
                 self.state = State.NORMAL
+            if self.state == State.NORMAL and dbg["resp_quality"] >= 0.2:
+                self._update_baseline(feat)
 
         info = {
             "fall_prob": fall_p,
             "unresp_prob": unresp_p,
+            "anomaly_score": anomaly_score,
             **dbg,
         }
         return self.state, info
