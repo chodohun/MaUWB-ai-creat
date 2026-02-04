@@ -1,9 +1,21 @@
-torch==2.4.0
-torchaudio==2.4.0
-tokenizers==0.21.0
-transformers==4.49.0
-huggingface_hub==0.28.1
-moshi==0.2.2
-torchtune==0.4.0
-torchao==0.9.0
-silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master
+diff --git a/requirements.txt b/requirements.txt
+index ba8a04ff88619127f4916243d2e863073f1ff0d6..334462e32aba601d63d08044155f9003aecbe073 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,9 +1,14 @@
+ torch==2.4.0
+ torchaudio==2.4.0
+ tokenizers==0.21.0
+ transformers==4.49.0
+ huggingface_hub==0.28.1
+ moshi==0.2.2
+ torchtune==0.4.0
+ torchao==0.9.0
+-silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master
+\ No newline at end of file
++silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master
++fastapi==0.115.8
++joblib==1.3.2
++numpy==1.26.4
++scipy==1.13.1
++uvicorn==0.34.0
