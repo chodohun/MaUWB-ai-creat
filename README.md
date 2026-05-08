@@ -154,3 +154,33 @@ By using this model, you agree to comply with all applicable laws and ethical gu
 
 ## Authors
 Johan Schalkwyk, Ankit Kumar, Dan Lyth, Sefik Emre Eskimez, Zack Hodari, Cinjon Resnick, Ramon Sanabria, Raven Jiang, and the Sesame team.
+
+## UWB Fall Detection Demo (Graduation Project)
+
+### 1) Install
+```bash
+pip install -r requirements.txt
+```
+
+### 2) Configure
+```bash
+cp .env.example .env
+# edit .env (MQTT_SERVER, MQTT_TOPIC, GEMINI_API_KEY 등)
+```
+
+### 3) Run
+```bash
+python uwb_fall_detection_2d.py
+```
+
+### 4) Input payload format
+MQTT payload 예시:
+```text
+A0:741,A1:450,A2:274,A3:587
+```
+- 입력 단위: cm
+- 내부 처리 단위: m
+
+### Notes
+- Gemini API 키가 없거나 호출 실패 시 휴리스틱 기반으로 자동 fallback 됩니다.
+- FastAPI `/status` 예시는 파일 내부에 포함되어 있으며, 향후 서버 연동용 TODO가 표시되어 있습니다.
